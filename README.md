@@ -23,10 +23,46 @@
 
 | 도구 | 용도 |
 |---|---|
-| `describe_template(path)` | 한눈 요약 — 포맷, 페이지·표·이미지 개수, 상위 단락 |
-| `inspect_template(path, start, limit)` | 페이지네이션된 단락 보기 |
-| `list_template_targets(path, target_kinds, start, limit)` | 편집 가능한 모든 위치 + target_id + text_hash + 길이 정보 |
-| `fill_and_save(path, edits, output_path, dry_run)` | 검증 → 필터 → 적용 → 저장 |
+| `describe_template(...)` | 한눈 요약 — 포맷, 페이지·표·이미지 개수, 상위 단락 |
+| `inspect_template(..., start, limit)` | 페이지네이션된 단락 보기 |
+| `list_template_targets(..., target_kinds, start, limit)` | 편집 가능한 모든 위치 + target_id + text_hash + 길이 정보 |
+| `fill_and_save(..., edits, ...)` | 검증 → 필터 → 적용 → 저장 |
+
+## 입력·출력 모드 (파일시스템 격리 대응)
+
+모든 도구는 **두 가지 방식** 중 하나로 템플릿을 받습니다:
+
+- **`template_path`** — 서버가 실행되는 머신의 파일 경로 (예: `C:/Users/.../template.hwpx`). 빠르고 복사 비용 없음.
+- **`template_b64` + `template_filename`** — base64 인코딩된 원본 바이트 + 원본 파일명 (예: `template_b64="UEsDBBQ...", template_filename="template.hwpx"`). 챗봇 세션과 MCP 서버가 다른 파일시스템에 있을 때 (예: Anthropic 샌드박스 ↔ 사용자 Windows) 사용.
+
+`fill_and_save`는 추가로:
+
+- **`output_path`** — 서버 머신에 결과 파일 저장
+- **`return_output_bytes=True`** — 응답에 `output_b64` (base64 바이트) + `output_size_bytes` 포함. 챗봇이 사용자에게 직접 전달 가능.
+
+### 챗봇 세션(샌드박스)에서 호출 예
+
+```python
+import base64
+file_bytes = open("template.hwpx", "rb").read()
+b64 = base64.b64encode(file_bytes).decode("ascii")
+
+# 1. 양식 분석
+desc = describe_template(template_b64=b64, template_filename="template.hwpx")
+
+# 2. 편집 가능 위치 조회
+targets = list_template_targets(template_b64=b64, template_filename="template.hwpx")
+
+# 3. 챗봇이 edits 구성 후 적용
+result = fill_and_save(
+    template_b64=b64,
+    template_filename="template.hwpx",
+    edits=[...],
+    return_output_bytes=True,
+)
+output_bytes = base64.b64decode(result["output_b64"])
+# output_bytes를 사용자에게 첨부로 전달
+```
 
 ## 설치
 
