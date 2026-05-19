@@ -6,6 +6,7 @@ build-backend = "setuptools.build_meta"
 name = "report-mcp"
 version = "0.1.0"
 description = "MCP server that fills user-supplied templates (DOCX/HWP/HWPX/PDF) with chatbot-generated content via document-processor IR edits."
+readme = "README.md"
 requires-python = ">=3.13"
 dependencies = [
     "mcp[cli]>=1.2.0",
