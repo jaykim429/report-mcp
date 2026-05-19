@@ -1,0 +1,19 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "report-mcp"
+version = "0.1.0"
+description = "MCP server that fills user-supplied templates (DOCX/HWP/HWPX/PDF) with chatbot-generated content via document-processor IR edits."
+requires-python = ">=3.13"
+dependencies = [
+    "mcp[cli]>=1.2.0",
+    "document-processor @ git+https://github.com/CGINSIDE-ROOKIES/document-processor.git",
+]
+
+[project.scripts]
+report-mcp = "report_mcp.server:main"
+
+[tool.setuptools.packages.find]
+where = ["src"]

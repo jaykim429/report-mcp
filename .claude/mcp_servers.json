@@ -1,0 +1,11 @@
+{
+  "mcpServers": {
+    "report-mcp": {
+      "command": "C:\\Users\\admin1\\Documents\\보고서 생성 MCP\\.venv\\Scripts\\python.exe",
+      "args": ["-m", "report_mcp"],
+      "env": {
+        "PYTHONIOENCODING": "utf-8"
+      }
+    }
+  }
+}

@@ -1,0 +1,17 @@
+1148,1151c1148,1158
+<         current_source_name = step.output_filename or _default_output_filename(
+<             source_name=current_source_name,
+<             source_doc_type=current_doc_type,
+<         )
+---
+>         # PATCHED (report-mcp local fix): NEVER update current_source_name
+>         # inside the loop. The original code did
+>         #   current_source_name = step.output_filename or _default_output_filename(...)
+>         # but `step.output_filename` already contains "X_edited.hwpx" from
+>         # inside _apply_*_edits_to_source, and feeding that back as the next
+>         # iteration's source_name made the internal writer add yet another
+>         # "_edited" — eventually overflowing Windows MAX_PATH after ~30
+>         # edits with a path like "X_edited_edited_..._edited.hwpx".
+>         # Keeping source_name stable across the loop is safe: it is only used
+>         # to name internal temp files; the final result.output_filename is
+>         # recomputed below from resolved.source_name.
