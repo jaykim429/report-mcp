@@ -17,13 +17,16 @@ from __future__ import annotations
 
 import base64
 import binascii
+import io
 import os
 import platform
 import tempfile
+import zipfile
 from pathlib import Path
 from typing import Any
 
 from .responses import bad_argument, error
+from .session import lookup_cached_template
 
 
 class ResolvedInput:
@@ -52,16 +55,35 @@ class TemplateInputResolver:
         template_path: str | None,
         template_b64: str | None,
         template_filename: str | None,
+        template_id: str | None = None,
     ) -> tuple[ResolvedInput | None, dict[str, Any] | None]:
-        """Returns (resolved_input, error_response). Exactly one is None."""
+        """Returns (resolved_input, error_response). Exactly one is None.
 
-        if template_path and template_b64:
+        Three input modes (mutually exclusive):
+          - template_id:   resolve via the server-side session cache (fastest,
+                           assumes register_template was called earlier).
+          - template_path: file on the MCP server's machine.
+          - template_b64 + template_filename: inline bytes (writes a temp file).
+        """
+
+        provided = sum(bool(x) for x in (template_id, template_path, template_b64))
+        if provided > 1:
             return None, bad_argument(
-                "Provide either template_path or template_b64, not both.",
-                "Choose one mode and call again. template_path is for files on "
-                "the MCP server's machine; template_b64 is for callers that "
-                "live in a different filesystem (e.g. a sandboxed chatbot).",
+                "Provide exactly one of template_id, template_path, or template_b64.",
+                "Choose one input mode and call again. template_id is the most "
+                "efficient when reusing a template across multiple tool calls.",
             )
+
+        if template_id:
+            cached_path = lookup_cached_template(template_id)
+            if cached_path is None:
+                return None, error(
+                    "not_found",
+                    f"No cached template with template_id={template_id!r}.",
+                    "The template_id is unknown or expired. Call register_template "
+                    "again to upload the file and obtain a fresh id.",
+                )
+            return ResolvedInput(cached_path, _temp=None), None
 
         if template_path:
             p = Path(template_path)
@@ -102,12 +124,56 @@ class TemplateInputResolver:
                     "Verify the chatbot encoded the file contents, not an "
                     "empty buffer.",
                 )
+            # Sanity-check the decoded bytes BEFORE handing to document-processor
+            # (which crashes with cryptic "negative seek value" errors deep
+            # inside zipfile when bytes are truncated in transit).
+            ext_lower = Path(template_filename).suffix.lower()
+            zip_like = ext_lower in {".docx", ".hwpx", ".hwtx"}
+            if zip_like:
+                if not data.startswith(b"PK\x03\x04"):
+                    return None, bad_argument(
+                        f"Decoded bytes are not a valid ZIP archive. Expected "
+                        f"ZIP magic 'PK\\x03\\x04' at offset 0; got {data[:4]!r}. "
+                        f"Total decoded length: {len(data):,} bytes.",
+                        "The base64 likely got mangled in transit. Re-encode "
+                        "the original file (no extra whitespace, no URL-safe "
+                        "variant) and retry.",
+                    )
+                # Catch tail truncation: a valid PK header but missing/corrupt
+                # End of Central Directory. document-processor's zipfile reader
+                # raises 'negative seek value' otherwise.
+                try:
+                    with zipfile.ZipFile(io.BytesIO(data)) as zf:
+                        zf.namelist()  # forces EOCD parsing
+                except (zipfile.BadZipFile, OSError, ValueError) as exc:
+                    return None, bad_argument(
+                        f"Decoded bytes have a ZIP header but a corrupted End "
+                        f"of Central Directory ({type(exc).__name__}: {exc}). "
+                        f"Total decoded length: {len(data):,} bytes — likely "
+                        "truncated in transit.",
+                        "Re-encode the full file and retry. If the transport "
+                        "keeps dropping the tail, register_template the file "
+                        "once and reuse template_id, or copy the file locally "
+                        "and pass template_path.",
+                    )
+            if ext_lower == ".pdf" and not data.startswith(b"%PDF-"):
+                return None, bad_argument(
+                    f"Decoded bytes are not a valid PDF. Expected '%PDF-' at "
+                    f"offset 0; got {data[:5]!r}. Total decoded length: "
+                    f"{len(data):,} bytes.",
+                    "The base64 likely got truncated. Re-encode and retry.",
+                )
             ext = Path(template_filename).suffix.lower()
+            # .hwtx is the Hancom HWPX template format (same ZIP+XML structure
+            # as .hwpx, different MIME). Rename to .hwpx so document-processor
+            # dispatches the HWPX reader.
+            if ext == ".hwtx":
+                ext = ".hwpx"
             if ext not in {".docx", ".hwp", ".hwpx", ".pdf"}:
                 return None, bad_argument(
                     f"Unsupported template_filename extension: {ext!r}",
-                    "template_filename must end in .docx, .hwp, .hwpx, or .pdf "
-                    "so the server can dispatch the right format reader.",
+                    "template_filename must end in .docx, .hwp, .hwpx, .hwtx, "
+                    "or .pdf so the server can dispatch the right format reader.",
                 )
             fd, tmp_name = tempfile.mkstemp(prefix="rmcp_in_", suffix=ext)
             try:

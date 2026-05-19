@@ -26,6 +26,7 @@ from .inputs import TemplateInputResolver
 from .patches import apply_library_patches
 from .pipeline import FillPipeline, _expected_output_ext
 from .responses import bad_argument
+from .session import register_template_in_cache, unregister_template_from_cache
 
 apply_library_patches()
 
@@ -92,10 +93,34 @@ mcp = FastMCP("report-mcp", instructions=SERVER_INSTRUCTIONS)
 # ──────────────────────────────────────────────────────────────────────────
 
 @mcp.tool()
+def register_template(template_b64: str, template_filename: str) -> dict[str, Any]:
+    """Cache a template on the server and return a `template_id` reusable in
+    every other tool. Use this when you'll call multiple tools on the same
+    template (describe + list + inspect + fill) to avoid re-uploading the
+    same base64 payload each time.
+
+    Entries auto-expire after 1 hour; call `unregister_template` to free
+    earlier. The cache holds at most 50 templates (oldest evicted).
+
+    Returns: {status: "ok", template_id, size_bytes, filename, expires_in_seconds}
+    """
+    return register_template_in_cache(template_b64, template_filename)
+
+
+@mcp.tool()
+def unregister_template(template_id: str) -> dict[str, Any]:
+    """Free the server-side cache entry for `template_id`. Optional —
+    entries auto-expire after 1 hour, but explicit cleanup is polite when
+    you're done with a template."""
+    return unregister_template_from_cache(template_id)
+
+
+@mcp.tool()
 def inspect_template(
     template_path: str | None = None,
     template_b64: str | None = None,
     template_filename: str | None = None,
+    template_id: str | None = None,
     start: int = 0,
     limit: int = 50,
 ) -> dict[str, Any]:
@@ -108,12 +133,17 @@ def inspect_template(
     DO NOT USE WHEN: You just need a flat list of every editable spot — use
     list_template_targets() instead.
 
-    Provide the template either as `template_path` (file on the server's
-    machine) or as `template_b64` + `template_filename` (inline base64 bytes
-    for cross-filesystem calls). Paginate large documents with `start` +
-    `limit`; `next_start` in the response says where to resume.
+    Provide the template via ONE of:
+      - `template_id` (preferred for repeat calls, from register_template)
+      - `template_path` (file on the server's machine)
+      - `template_b64` + `template_filename` (inline base64, cross-filesystem)
+
+    Paginate large documents with `start` + `limit`; `next_start` in the
+    response says where to resume.
     """
-    resolved, err = TemplateInputResolver.resolve(template_path, template_b64, template_filename)
+    resolved, err = TemplateInputResolver.resolve(
+        template_path, template_b64, template_filename, template_id,
+    )
     if err:
         return err
     with resolved:
@@ -125,6 +155,7 @@ def list_template_targets(
     template_path: str | None = None,
     template_b64: str | None = None,
     template_filename: str | None = None,
+    template_id: str | None = None,
     target_kinds: list[str] | None = None,
     start: int = 0,
     limit: int = 200,
@@ -154,7 +185,9 @@ def list_template_targets(
     """
     if max_targets is not None:
         limit = max_targets
-    resolved, err = TemplateInputResolver.resolve(template_path, template_b64, template_filename)
+    resolved, err = TemplateInputResolver.resolve(
+        template_path, template_b64, template_filename, template_id,
+    )
     if err:
         return err
     with resolved:
@@ -168,6 +201,7 @@ def describe_template(
     template_path: str | None = None,
     template_b64: str | None = None,
     template_filename: str | None = None,
+    template_id: str | None = None,
 ) -> dict[str, Any]:
     """One-call summary of a template's overall shape — page count, target
     counts by kind, and a small text sample.
@@ -185,7 +219,9 @@ def describe_template(
     (per target_kind), `page_count`, `top_paragraphs` (first 5 non-empty),
     `has_tables`, `has_images`.
     """
-    resolved, err = TemplateInputResolver.resolve(template_path, template_b64, template_filename)
+    resolved, err = TemplateInputResolver.resolve(
+        template_path, template_b64, template_filename, template_id,
+    )
     if err:
         return err
     with resolved:
@@ -200,6 +236,7 @@ def fill_and_save(
     dry_run: bool = False,
     template_b64: str | None = None,
     template_filename: str | None = None,
+    template_id: str | None = None,
     return_output_bytes: bool = False,
 ) -> dict[str, Any]:
     """Apply a batch of edits to the template and write/return the result.
@@ -275,7 +312,9 @@ def fill_and_save(
             "Pick one output channel and call again.",
         )
 
-    resolved, err = TemplateInputResolver.resolve(template_path, template_b64, template_filename)
+    resolved, err = TemplateInputResolver.resolve(
+        template_path, template_b64, template_filename, template_id,
+    )
     if err:
         return err
 
@@ -324,6 +363,42 @@ def fill_and_save(
         len(result.get("skipped_redundant_edits") or []),
     )
     return result
+
+
+@mcp.tool()
+def convert_to_hwpx(
+    template_path: str | None = None,
+    template_b64: str | None = None,
+    template_filename: str | None = None,
+    template_id: str | None = None,
+    output_path: str | None = None,
+    return_output_bytes: bool = False,
+) -> dict[str, Any]:
+    """Convert an .hwp / .hwpx / .hwtx input to canonical .hwpx without
+    modifying any content. Equivalent to fill_and_save with an empty edits
+    list — convenience wrapper for the common "I just want hwpx" flow.
+
+    USE WHEN: User uploads a binary .hwp and you want the .hwpx equivalent,
+    or wants a .hwtx template normalized to .hwpx. The linesegarray cache
+    cleanup still runs so the output renders cleanly in Hangul.
+
+    DO NOT USE WHEN: input is DOCX or PDF (no conversion target exists).
+
+    Requires Java 11+ on the server only for binary .hwp inputs.
+    .hwpx and .hwtx work without Java.
+
+    Returns the same shape as fill_and_save.
+    """
+    return fill_and_save(
+        template_path=template_path,
+        edits=[],
+        output_path=output_path,
+        dry_run=False,
+        template_b64=template_b64,
+        template_filename=template_filename,
+        template_id=template_id,
+        return_output_bytes=return_output_bytes,
+    )
 
 
 def main() -> None:

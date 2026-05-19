@@ -19,14 +19,17 @@
     fill_and_save  →  결과.hwpx (원본 서식 유지, 내용만 교체)
 ```
 
-## 노출되는 도구 (4개)
+## 노출되는 도구 (7개)
 
 | 도구 | 용도 |
 |---|---|
+| `register_template(template_b64, template_filename)` | 템플릿을 서버에 캐싱해서 `template_id` 받음. 같은 파일에 여러 도구 호출 시 base64 재업로드 회피 |
+| `unregister_template(template_id)` | 캐시 해제 (자동 만료 1시간) |
 | `describe_template(...)` | 한눈 요약 — 포맷, 페이지·표·이미지 개수, 상위 단락 |
 | `inspect_template(..., start, limit)` | 페이지네이션된 단락 보기 |
 | `list_template_targets(..., target_kinds, start, limit)` | 편집 가능한 모든 위치 + target_id + text_hash + 길이 정보 |
 | `fill_and_save(..., edits, ...)` | 검증 → 필터 → 적용 → 저장 |
+| `convert_to_hwpx(...)` | HWP/HWPX/HWTX → HWPX 변환 (편집 없이) |
 
 ## 입력·출력 모드 (파일시스템 격리 대응)
 

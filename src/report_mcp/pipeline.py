@@ -23,6 +23,7 @@ from pydantic import TypeAdapter
 from .documents import TemplateReader
 from .errors import ExceptionClassifier
 from .length import LengthGuardrail
+from .postprocess import clear_linesegarray_cache
 from .responses import bad_argument, error, not_found, ok
 
 _edits_adapter = TypeAdapter(list[DocumentEdit])
@@ -30,6 +31,7 @@ _edits_adapter = TypeAdapter(list[DocumentEdit])
 _OUTPUT_FORMAT_FOR_INPUT = {
     ".docx": ".docx",
     ".hwpx": ".hwpx",
+    ".hwtx": ".hwpx",  # Hancom HWPX template — same ZIP+XML structure, written as .hwpx
     ".hwp": ".hwpx",
     ".pdf": None,  # PDF cannot be written back
 }
@@ -332,9 +334,22 @@ class FillPipeline:
             shutil.move(str(write_target), str(self.out_p))
             shutil.rmtree(tmp_dir, ignore_errors=True)
 
+        # HWPX post-processing: clear stale <hp:linesegarray> cache that
+        # document-processor leaves behind. Without this, Hangul viewer
+        # renders the new text with line-breaks computed for the old text.
+        linesegarray_cleared = 0
+        if self.out_p.suffix.lower() == ".hwpx":
+            try:
+                linesegarray_cleared = clear_linesegarray_cache(str(self.out_p))
+            except Exception:
+                # Non-fatal: the file is still valid HWPX, just may render
+                # with stale line breaks on first open.
+                linesegarray_cleared = -1
+
         return self._with_meta(ok(
             output_path=str(self.out_p),
             edits_applied=len(coerced),
+            linesegarray_sections_cleared=linesegarray_cleared,
         ))
 
     def _validation_failure(self, v_dump: dict[str, Any]) -> dict[str, Any]:
